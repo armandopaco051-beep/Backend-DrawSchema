@@ -31,6 +31,10 @@ class ProyectoUsuarioCreate(BaseModel):
     id_rol: int
 
 
+class ProyectoUsuarioUpdate(BaseModel):
+    id_rol: int
+
+
 class ProyectoUsuarioResponse(BaseModel):
     usuario_codigo: str
     id_proyecto: int

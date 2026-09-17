@@ -3,19 +3,105 @@ from sqlalchemy.orm import Session
 from app.models.proyecto import Proyecto
 from app.models.proyecto_usuario import ProyectoUsuario
 from app.models.usuario import Usuario, Rol
-from app.schemas.proyecto import ProyectoCreate, ProyectoUpdate, ProyectoUsuarioCreate
+from app.schemas.proyecto import ProyectoCreate, ProyectoUpdate, ProyectoUsuarioCreate, ProyectoUsuarioUpdate
+
+
+PROJECT_ROLE_PERMISSIONS = {
+    "propietario": {
+        "ver_proyecto",
+        "editar_proyecto",
+        "eliminar_proyecto",
+        "gestionar_miembros",
+        "crear_diagrama",
+        "editar_diagrama",
+        "eliminar_diagrama",
+        "ver_diagrama",
+    },
+    "admin": {
+        "ver_proyecto",
+        "editar_proyecto",
+        "gestionar_miembros",
+        "crear_diagrama",
+        "editar_diagrama",
+        "eliminar_diagrama",
+        "ver_diagrama",
+    },
+    "editor": {
+        "ver_proyecto",
+        "crear_diagrama",
+        "editar_diagrama",
+        "ver_diagrama",
+    },
+    "visualizador": {
+        "ver_proyecto",
+        "ver_diagrama",
+    },
+}
+
+PROJECT_ROLE_ALIASES = {
+    "colaborador": "editor",
+    "views": "visualizador",
+}
+
+
+def normalizar_rol(nombre: str | None):
+    rol = (nombre or "").strip().lower()
+    return PROJECT_ROLE_ALIASES.get(rol, rol)
+
+
+def obtener_miembro_proyecto(db: Session, proyecto_id: int, usuario_codigo: str):
+    return (
+        db.query(ProyectoUsuario)
+        .filter(
+            ProyectoUsuario.id_proyecto == proyecto_id,
+            ProyectoUsuario.usuario_codigo == usuario_codigo,
+        )
+        .first()
+    )
+
+
+def rol_es_valido_para_proyecto(rol: Rol | None):
+    if rol is None:
+        return False
+
+    return normalizar_rol(rol.nombre) in PROJECT_ROLE_PERMISSIONS
+
+
+def usuario_tiene_permiso(db: Session, proyecto_id: int, usuario_codigo: str, permiso: str):
+    miembro = obtener_miembro_proyecto(db, proyecto_id, usuario_codigo)
+
+    if miembro is None or miembro.rol is None:
+        return False
+
+    permisos = PROJECT_ROLE_PERMISSIONS.get(normalizar_rol(miembro.rol.nombre), set())
+    return permiso in permisos
+
+
+def contar_propietarios(db: Session, proyecto_id: int):
+    return (
+        db.query(ProyectoUsuario)
+        .join(Rol, ProyectoUsuario.id_rol == Rol.id)
+        .filter(
+            ProyectoUsuario.id_proyecto == proyecto_id,
+            Rol.nombre.ilike("propietario"),
+        )
+        .count()
+    )
 
 
 def crear_proyecto(db: Session, datos: ProyectoCreate):
     usuario = db.query(Usuario).filter(Usuario.codigo == datos.usuario_codigo).first()
 
     if usuario is None:
-        return None, "Usuario no Existe"
+        return None, "USUARIO_NO_EXISTE"
 
     rol = db.query(Rol).filter(Rol.id == datos.id_rol).first()
 
     if rol is None:
-        return None, "Rol no existente"
+        return None, "ROL_NO_EXISTE"
+
+    if not rol_es_valido_para_proyecto(rol):
+        return None, "ROL_PROYECTO_INVALIDO"
 
     proyecto = Proyecto(
         nombre=datos.nombre,
@@ -89,29 +175,25 @@ def agregar_usuario_a_proyecto(db: Session, datos: ProyectoUsuarioCreate):
     usuario = db.query(Usuario).filter(Usuario.codigo == datos.usuario_codigo).first()
 
     if usuario is None:
-        return None, "Usuario no existente"
+        return None, "USUARIO_NO_EXISTE"
 
     proyecto = obtener_proyecto(db, datos.id_proyecto)
 
     if proyecto is None:
-        return None, "Proyecto no existe"
+        return None, "PROYECTO_NO_EXISTE"
 
     rol = db.query(Rol).filter(Rol.id == datos.id_rol).first()
 
     if rol is None:
-        return None, "Rol no existente"
+        return None, "ROL_NO_EXISTE"
 
-    existe = (
-        db.query(ProyectoUsuario)
-        .filter(
-            ProyectoUsuario.usuario_codigo == datos.usuario_codigo,
-            ProyectoUsuario.id_proyecto == datos.id_proyecto,
-        )
-        .first()
-    )
+    if not rol_es_valido_para_proyecto(rol):
+        return None, "ROL_PROYECTO_INVALIDO"
+
+    existe = obtener_miembro_proyecto(db, datos.id_proyecto, datos.usuario_codigo)
 
     if existe:
-        return None, "El usuario ya se encuentra en el proyecto"
+        return None, "USUARIO_YA_ESTA_EN_PROYECTO"
 
     proyecto_usuario = ProyectoUsuario(
         usuario_codigo=datos.usuario_codigo,
@@ -126,6 +208,66 @@ def agregar_usuario_a_proyecto(db: Session, datos: ProyectoUsuarioCreate):
     return proyecto_usuario, None
 
 
+def agregar_colaborador_a_proyecto(
+    db: Session,
+    proyecto_id: int,
+    datos: ProyectoUsuarioCreate,
+    actor_codigo: str,
+):
+    proyecto = obtener_proyecto(db, proyecto_id)
+
+    if proyecto is None:
+        return None, "PROYECTO_NO_EXISTE"
+
+    if not usuario_tiene_permiso(db, proyecto_id, actor_codigo, "gestionar_miembros"):
+        return None, "SIN_PERMISO"
+
+    datos.id_proyecto = proyecto_id
+    return agregar_usuario_a_proyecto(db, datos)
+
+
+def actualizar_rol_colaborador(
+    db: Session,
+    proyecto_id: int,
+    usuario_codigo: str,
+    datos: ProyectoUsuarioUpdate,
+    actor_codigo: str,
+):
+    proyecto = obtener_proyecto(db, proyecto_id)
+
+    if proyecto is None:
+        return None, "PROYECTO_NO_EXISTE"
+
+    if not usuario_tiene_permiso(db, proyecto_id, actor_codigo, "gestionar_miembros"):
+        return None, "SIN_PERMISO"
+
+    miembro = obtener_miembro_proyecto(db, proyecto_id, usuario_codigo)
+
+    if miembro is None:
+        return None, "MIEMBRO_NO_EXISTE"
+
+    nuevo_rol = db.query(Rol).filter(Rol.id == datos.id_rol).first()
+
+    if nuevo_rol is None:
+        return None, "ROL_NO_EXISTE"
+
+    if not rol_es_valido_para_proyecto(nuevo_rol):
+        return None, "ROL_PROYECTO_INVALIDO"
+
+    rol_actual = normalizar_rol(miembro.rol.nombre if miembro.rol else None)
+    nuevo_rol_nombre = normalizar_rol(nuevo_rol.nombre)
+
+    if rol_actual == "propietario" and nuevo_rol_nombre != "propietario":
+        if contar_propietarios(db, proyecto_id) <= 1:
+            return None, "NO_PUEDE_QUEDAR_SIN_PROPIETARIO"
+
+    miembro.id_rol = datos.id_rol
+    db.commit()
+    db.refresh(miembro)
+
+    return miembro, None
+
+
 def listar_miembros_proyecto(db: Session, proyecto_id: int):
     return (
         db.query(ProyectoUsuario)
@@ -135,14 +277,7 @@ def listar_miembros_proyecto(db: Session, proyecto_id: int):
 
 
 def quitar_usuario_de_proyecto(db: Session, proyecto_id: int, usuario_codigo: str):
-    miembro = (
-        db.query(ProyectoUsuario)
-        .filter(
-            ProyectoUsuario.id_proyecto == proyecto_id,
-            ProyectoUsuario.usuario_codigo == usuario_codigo,
-        )
-        .first()
-    )
+    miembro = obtener_miembro_proyecto(db, proyecto_id, usuario_codigo)
 
     if miembro is None:
         return None
@@ -151,3 +286,28 @@ def quitar_usuario_de_proyecto(db: Session, proyecto_id: int, usuario_codigo: st
     db.commit()
 
     return miembro
+
+
+def quitar_colaborador_de_proyecto(db: Session, proyecto_id: int, usuario_codigo: str, actor_codigo: str):
+    proyecto = obtener_proyecto(db, proyecto_id)
+
+    if proyecto is None:
+        return None, "PROYECTO_NO_EXISTE"
+
+    if not usuario_tiene_permiso(db, proyecto_id, actor_codigo, "gestionar_miembros"):
+        return None, "SIN_PERMISO"
+
+    miembro = obtener_miembro_proyecto(db, proyecto_id, usuario_codigo)
+
+    if miembro is None:
+        return None, "MIEMBRO_NO_EXISTE"
+
+    rol_actual = normalizar_rol(miembro.rol.nombre if miembro.rol else None)
+
+    if rol_actual == "propietario" and contar_propietarios(db, proyecto_id) <= 1:
+        return None, "NO_PUEDE_QUEDAR_SIN_PROPIETARIO"
+
+    db.delete(miembro)
+    db.commit()
+
+    return miembro, None

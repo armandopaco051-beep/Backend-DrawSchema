@@ -9,7 +9,16 @@ from app.models.diagrama import Diagrama
 from app.models.proyecto import Proyecto
 from app.models.usuario import Usuario
 from app.models.version_historial import VersionHistorial
-from app.schemas.diagrama import ClaseCreate, ClaseMove, ClaseUpdate, DiagramaCreate, DiagramaUpdate
+from app.schemas.diagrama import (
+    ClaseCreate,
+    ClaseMove,
+    ClaseUpdate,
+    DiagramaCreate,
+    DiagramaUpdate,
+    RelacionCreate,
+    RelacionUpdate,
+)
+from app.services.uml_validator import validate_uml_relations
 
 
 def contenido_inicial():
@@ -54,10 +63,16 @@ def crear_diagrama(db: Session, datos: DiagramaCreate):
     if proyecto is None:
         return None, "PROYECTO_NO_EXISTE"
 
+    contenido = normalizar_contenido(datos.contenido)
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
+
     diagrama = Diagrama(
         id_proyecto=datos.id_proyecto,
         nombre=datos.nombre,
-        contenido=normalizar_contenido(datos.contenido),
+        contenido=contenido,
         version=1,
     )
 
@@ -89,7 +104,7 @@ def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
     diagrama = obtener_diagrama(db, diagrama_id)
 
     if diagrama is None:
-        return None
+        return None, "DIAGRAMA_NO_EXISTE"
 
     guardar_version(db, diagrama, datos.autor_codigo)
 
@@ -97,7 +112,13 @@ def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
         diagrama.nombre = datos.nombre
 
     if datos.contenido is not None:
-        diagrama.contenido = normalizar_contenido(datos.contenido)
+        contenido = normalizar_contenido(datos.contenido)
+        error = validate_uml_relations(contenido)
+
+        if error:
+            return None, error
+
+        diagrama.contenido = contenido
         flag_modified(diagrama, "contenido")
 
     diagrama.version += 1
@@ -106,7 +127,7 @@ def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
     db.commit()
     db.refresh(diagrama)
 
-    return diagrama
+    return diagrama, None
 
 
 def eliminar_diagrama(db: Session, diagrama_id: int):
@@ -158,6 +179,11 @@ def agregar_clase(db: Session, diagrama_id: int, datos: ClaseCreate):
     }
 
     contenido["nodes"].append(nueva_clase)
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
+
     diagrama.contenido = contenido
     flag_modified(diagrama, "contenido")
     diagrama.version += 1
@@ -187,6 +213,11 @@ def mover_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseMove):
         "x": datos.x,
         "y": datos.y,
     }
+
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
 
     diagrama.contenido = contenido
     flag_modified(diagrama, "contenido")
@@ -224,6 +255,11 @@ def editar_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseUpdat
     if datos.methods is not None:
         data["methods"] = datos.methods
 
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
+
     diagrama.contenido = contenido
     flag_modified(diagrama, "contenido")
     diagrama.version += 1
@@ -253,8 +289,152 @@ def eliminar_clase(db: Session, diagrama_id: int, clase_id: str, autor_codigo: s
     contenido["edges"] = [
         edge
         for edge in contenido.get("edges", [])
-        if edge.get("source") != clase_id and edge.get("target") != clase_id
+        if (
+            edge.get("source") != clase_id
+            and edge.get("target") != clase_id
+            and (edge.get("data") or {}).get("associationClassId") != clase_id
+        )
     ]
+
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
+
+    diagrama.contenido = contenido
+    flag_modified(diagrama, "contenido")
+    diagrama.version += 1
+    diagrama.actualizado_en = datetime.utcnow()
+
+    db.commit()
+    db.refresh(diagrama)
+
+    return diagrama, None
+
+
+def buscar_indice_relacion(contenido: dict, relacion_id: str):
+    for index, edge in enumerate(contenido.get("edges", [])):
+        if edge.get("id") == relacion_id:
+            return index
+
+    return None
+
+
+def agregar_relacion(db: Session, diagrama_id: int, datos: RelacionCreate):
+    diagrama = obtener_diagrama(db, diagrama_id)
+
+    if diagrama is None:
+        return None, "DIAGRAMA_NO_EXISTE"
+
+    contenido = normalizar_contenido(diagrama.contenido)
+    relacion_id = datos.id or f"rel-{uuid4().hex[:8]}"
+
+    if buscar_indice_relacion(contenido, relacion_id) is not None:
+        return None, "RELACION_YA_EXISTE"
+
+    guardar_version(db, diagrama, datos.autor_codigo)
+
+    data = deepcopy(datos.data)
+    data.setdefault("sourceClassId", datos.source)
+    data.setdefault("targetClassId", datos.target)
+
+    nueva_relacion = {
+        "id": relacion_id,
+        "source": datos.source,
+        "target": datos.target,
+        "data": data,
+    }
+
+    if datos.type is not None:
+        nueva_relacion["type"] = datos.type
+
+    contenido["edges"].append(nueva_relacion)
+
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
+
+    diagrama.contenido = contenido
+    flag_modified(diagrama, "contenido")
+    diagrama.version += 1
+    diagrama.actualizado_en = datetime.utcnow()
+
+    db.commit()
+    db.refresh(diagrama)
+
+    return diagrama, None
+
+
+def editar_relacion(db: Session, diagrama_id: int, relacion_id: str, datos: RelacionUpdate):
+    diagrama = obtener_diagrama(db, diagrama_id)
+
+    if diagrama is None:
+        return None, "DIAGRAMA_NO_EXISTE"
+
+    contenido = normalizar_contenido(diagrama.contenido)
+    index = buscar_indice_relacion(contenido, relacion_id)
+
+    if index is None:
+        return None, "RELACION_NO_EXISTE"
+
+    guardar_version(db, diagrama, datos.autor_codigo)
+
+    relacion = deepcopy(contenido["edges"][index])
+
+    if datos.source is not None:
+        relacion["source"] = datos.source
+
+    if datos.target is not None:
+        relacion["target"] = datos.target
+
+    if datos.type is not None:
+        relacion["type"] = datos.type
+
+    if datos.data is not None:
+        relacion["data"] = datos.data
+
+    data = relacion.setdefault("data", {})
+    data.setdefault("sourceClassId", relacion.get("source"))
+    data.setdefault("targetClassId", relacion.get("target"))
+
+    contenido["edges"][index] = relacion
+
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
+
+    diagrama.contenido = contenido
+    flag_modified(diagrama, "contenido")
+    diagrama.version += 1
+    diagrama.actualizado_en = datetime.utcnow()
+
+    db.commit()
+    db.refresh(diagrama)
+
+    return diagrama, None
+
+
+def eliminar_relacion(db: Session, diagrama_id: int, relacion_id: str, autor_codigo: str | None = None):
+    diagrama = obtener_diagrama(db, diagrama_id)
+
+    if diagrama is None:
+        return None, "DIAGRAMA_NO_EXISTE"
+
+    contenido = normalizar_contenido(diagrama.contenido)
+    index = buscar_indice_relacion(contenido, relacion_id)
+
+    if index is None:
+        return None, "RELACION_NO_EXISTE"
+
+    guardar_version(db, diagrama, autor_codigo)
+    contenido["edges"].pop(index)
+
+    error = validate_uml_relations(contenido)
+
+    if error:
+        return None, error
 
     diagrama.contenido = contenido
     flag_modified(diagrama, "contenido")

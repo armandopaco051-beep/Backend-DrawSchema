@@ -24,10 +24,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.router.include_router(auth)
-app.router.include_router(usuario)
-app.router.include_router(proyecto)
-app.router.include_router(diagrama)
+app.include_router(auth)
+app.include_router(usuario)
+app.include_router(proyecto)
+app.include_router(diagrama)
 
 
 @app.get("/")

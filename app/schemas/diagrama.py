@@ -52,5 +52,22 @@ class ClaseMove(BaseModel):
     autor_codigo: str | None = None
 
 
+class RelacionCreate(BaseModel):
+    id: str | None = None
+    source: str
+    target: str
+    type: str | None = None
+    data: dict[str, Any]
+    autor_codigo: str | None = None
+
+
+class RelacionUpdate(BaseModel):
+    source: str | None = None
+    target: str | None = None
+    type: str | None = None
+    data: dict[str, Any] | None = None
+    autor_codigo: str | None = None
+
+
 class MensajeResponse(BaseModel):
     mensaje: str
