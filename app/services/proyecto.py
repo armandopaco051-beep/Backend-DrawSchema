@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta
+import secrets
+import string
+
 from sqlalchemy.orm import Session
 
 from app.models.proyecto import Proyecto
@@ -311,3 +315,130 @@ def quitar_colaborador_de_proyecto(db: Session, proyecto_id: int, usuario_codigo
     db.commit()
 
     return miembro, None
+
+
+def generar_token_invitacion(longitud: int = 6) -> str:
+    caracteres = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    random_part = "".join(secrets.choice(caracteres) for _ in range(longitud))
+    return f"PRJ-{random_part}"
+
+
+def obtener_o_crear_codigo_invitacion(
+    db: Session,
+    proyecto_id: int,
+    actor_codigo: str,
+    forzar: bool = False,
+    dias_validez: int = 7,
+):
+    proyecto = obtener_proyecto(db, proyecto_id)
+
+    if proyecto is None:
+        return None, "PROYECTO_NO_EXISTE"
+
+    if not usuario_tiene_permiso(db, proyecto_id, actor_codigo, "gestionar_miembros"):
+        return None, "SIN_PERMISO"
+
+    ahora = datetime.utcnow()
+
+    # Si ya existe código, no ha expirado y no se fuerza regeneración, reutilizamos el código
+    if (
+        not forzar
+        and proyecto.codigo_invitacion
+        and proyecto.codigo_expira_en
+        and proyecto.codigo_expira_en > ahora
+    ):
+        dias_restantes = max(0, (proyecto.codigo_expira_en - ahora).days)
+        return {
+            "codigo": proyecto.codigo_invitacion,
+            "expira_en": proyecto.codigo_expira_en,
+            "dias_restantes": dias_restantes,
+            "es_nuevo": False,
+        }, None
+
+    # Generar nuevo código garantizando que no colisione
+    nuevo_codigo = generar_token_invitacion()
+    while db.query(Proyecto).filter(Proyecto.codigo_invitacion == nuevo_codigo).first() is not None:
+        nuevo_codigo = generar_token_invitacion()
+
+    nueva_expiracion = ahora + timedelta(days=dias_validez)
+    proyecto.codigo_invitacion = nuevo_codigo
+    proyecto.codigo_expira_en = nueva_expiracion
+
+    db.commit()
+    db.refresh(proyecto)
+
+    return {
+        "codigo": proyecto.codigo_invitacion,
+        "expira_en": proyecto.codigo_expira_en,
+        "dias_restantes": dias_validez,
+        "es_nuevo": True,
+    }, None
+
+
+def obtener_info_codigo_invitacion(db: Session, codigo: str):
+    codigo_limpio = (codigo or "").strip().upper()
+
+    if not codigo_limpio:
+        return None, "CODIGO_VACIO"
+
+    proyecto = db.query(Proyecto).filter(Proyecto.codigo_invitacion == codigo_limpio).first()
+
+    if proyecto is None:
+        return None, "CODIGO_INVALIDO"
+
+    ahora = datetime.utcnow()
+    valido = bool(proyecto.codigo_expira_en and proyecto.codigo_expira_en > ahora)
+
+    return {
+        "proyecto_id": proyecto.id,
+        "nombre": proyecto.nombre,
+        "descripcion": proyecto.descripcion,
+        "valido": valido,
+        "expira_en": proyecto.codigo_expira_en,
+    }, None
+
+
+def unirse_a_proyecto_con_codigo(db: Session, codigo: str, usuario_codigo: str):
+    codigo_limpio = (codigo or "").strip().upper()
+
+    if not codigo_limpio:
+        return None, "CODIGO_VACIO"
+
+    proyecto = db.query(Proyecto).filter(Proyecto.codigo_invitacion == codigo_limpio).first()
+
+    if proyecto is None:
+        return None, "CODIGO_INVALIDO"
+
+    ahora = datetime.utcnow()
+
+    if not proyecto.codigo_expira_en or proyecto.codigo_expira_en <= ahora:
+        return None, "CODIGO_EXPIRADO"
+
+    miembro = obtener_miembro_proyecto(db, proyecto.id, usuario_codigo)
+
+    if miembro:
+        return None, "USUARIO_YA_ESTA_EN_PROYECTO"
+
+    # Buscar rol editor por defecto, o colaborador
+    rol_editor = db.query(Rol).filter(Rol.nombre.ilike("editor")).first()
+
+    if not rol_editor:
+        rol_editor = db.query(Rol).filter(Rol.nombre.ilike("colaborador")).first()
+
+    if not rol_editor:
+        rol_editor = db.query(Rol).first()
+
+    if not rol_editor:
+        return None, "ROL_NO_EXISTE"
+
+    nuevo_miembro = ProyectoUsuario(
+        usuario_codigo=usuario_codigo,
+        id_proyecto=proyecto.id,
+        id_rol=rol_editor.id,
+    )
+
+    db.add(nuevo_miembro)
+    db.commit()
+
+    return proyecto, None
+

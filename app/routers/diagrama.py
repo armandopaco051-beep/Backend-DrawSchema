@@ -13,6 +13,8 @@ from app.schemas.diagrama import (
     MensajeResponse,
     RelacionCreate,
     RelacionUpdate,
+    RestaurarVersionRequest,
+    VersionHistorialResponse,
 )
 from app.services.diagrama import (
     actualizar_diagrama,
@@ -26,8 +28,10 @@ from app.services.diagrama import (
     eliminar_relacion,
     listar_diagramas,
     listar_diagramas_por_proyecto,
+    listar_versiones_diagrama,
     mover_clase,
     obtener_diagrama,
+    restaurar_version_diagrama,
 )
 from app.security.auth_dependencies import get_current_user
 from app.services.proyecto import usuario_tiene_permiso
@@ -101,6 +105,44 @@ def abrir(
     usuario_actual: Usuario = Depends(get_current_user),
 ):
     return obtener_diagrama_con_permiso(db, diagrama_id, usuario_actual.codigo, "ver_diagrama")
+
+
+@router.get("/{diagrama_id}/versiones", response_model=list[VersionHistorialResponse])
+def listar_versiones(
+    diagrama_id: int,
+    db: Session = Depends(get_db),
+    usuario_actual: Usuario = Depends(get_current_user),
+):
+    obtener_diagrama_con_permiso(db, diagrama_id, usuario_actual.codigo, "ver_diagrama")
+    return listar_versiones_diagrama(db, diagrama_id)
+
+
+@router.post("/{diagrama_id}/versiones/{version_id}/restaurar", response_model=DiagramaResponse)
+def restaurar_version(
+    diagrama_id: int,
+    version_id: int,
+    datos: RestaurarVersionRequest,
+    db: Session = Depends(get_db),
+    usuario_actual: Usuario = Depends(get_current_user),
+):
+    obtener_diagrama_con_permiso(db, diagrama_id, usuario_actual.codigo, "editar_diagrama")
+    diagrama, error = restaurar_version_diagrama(
+        db,
+        diagrama_id,
+        version_id,
+        datos.autor_codigo or usuario_actual.codigo,
+    )
+
+    if error == "DIAGRAMA_NO_EXISTE":
+        raise HTTPException(status_code=404, detail="Diagrama no encontrado")
+
+    if error == "VERSION_NO_EXISTE":
+        raise HTTPException(status_code=404, detail="Version no encontrada")
+
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    return diagrama
 
 
 @router.put("/{diagrama_id}", response_model=DiagramaResponse)

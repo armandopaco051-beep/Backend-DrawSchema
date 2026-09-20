@@ -20,9 +20,31 @@ class ProyectoResponse(BaseModel):
     nombre: str
     descripcion: str | None = None
     creado_en: datetime | None = None
+    codigo_invitacion: str | None = None
+    codigo_expira_en: datetime | None = None
 
     class Config:
         from_attributes = True
+
+
+class CodigoInvitacionResponse(BaseModel):
+    codigo: str
+    expira_en: datetime
+    dias_restantes: int
+    es_nuevo: bool
+
+
+class UnirseProyectoRequest(BaseModel):
+    codigo: str
+
+
+class InvitacionPreviewResponse(BaseModel):
+    proyecto_id: int
+    nombre: str
+    descripcion: str | None = None
+    valido: bool
+    expira_en: datetime | None = None
+
 
 
 class ProyectoUsuarioCreate(BaseModel):

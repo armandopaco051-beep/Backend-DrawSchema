@@ -28,3 +28,10 @@ class Diagrama(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    comentarios = relationship(
+        "Comentario",
+        back_populates="diagrama",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+

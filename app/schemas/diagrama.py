@@ -29,6 +29,36 @@ class DiagramaResponse(BaseModel):
         from_attributes = True
 
 
+class VersionAutorResponse(BaseModel):
+    codigo: str
+    nombres: str
+    apellidos: str
+    email: str
+
+    class Config:
+        from_attributes = True
+
+
+class VersionHistorialResponse(BaseModel):
+    id: int
+    diagrama_id: int
+    autor_id: str
+    contenido: dict[str, Any]
+    version: int
+    fecha: datetime
+    titulo: str | None = None
+    descripcion: str | None = None
+    tipo: str
+    autor: VersionAutorResponse | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class RestaurarVersionRequest(BaseModel):
+    autor_codigo: str | None = None
+
+
 class ClaseCreate(BaseModel):
     id: str | None = None
     name: str

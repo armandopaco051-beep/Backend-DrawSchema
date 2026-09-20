@@ -29,5 +29,10 @@ class VersionHistorial(Base):
     version = Column(Integer, nullable=False)
     fecha = Column(DateTime, nullable=False, default=datetime.utcnow, server_default=func.now())
 
+    titulo = Column(String(150), nullable=True)
+    descripcion = Column(String, nullable=True)
+    tipo = Column(String(50), nullable=False, default="auto")
+    contenido_hash = Column(String(128), nullable=True)
+
     diagrama = relationship("Diagrama", back_populates="versiones")
     autor = relationship("Usuario", back_populates="versiones")

@@ -1,5 +1,7 @@
 from copy import deepcopy
-from datetime import datetime
+import hashlib
+import json
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy.orm.attributes import flag_modified
@@ -28,7 +30,60 @@ def contenido_inicial():
     }
 
 
-def guardar_version(db: Session, diagrama: Diagrama, autor_codigo: str | None):
+VERSION_CHECKPOINT_HOURS = 24
+
+
+def calcular_hash_contenido(contenido: dict):
+    contenido_normalizado = json.dumps(
+        contenido,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    return hashlib.sha256(contenido_normalizado.encode("utf-8")).hexdigest()
+
+
+def obtener_ultima_version(db: Session, diagrama_id: int):
+    return (
+        db.query(VersionHistorial)
+        .filter(VersionHistorial.diagrama_id == diagrama_id)
+        .order_by(VersionHistorial.fecha.desc())
+        .first()
+    )
+
+
+def debe_crear_version_automatica(db: Session, diagrama: Diagrama):
+    ultima_version = obtener_ultima_version(db, diagrama.id)
+    contenido_hash = calcular_hash_contenido(normalizar_contenido(diagrama.contenido))
+
+    if ultima_version is None:
+        return True, contenido_hash
+
+    ultima_version_hash = ultima_version.contenido_hash or calcular_hash_contenido(
+        normalizar_contenido(ultima_version.contenido)
+    )
+
+    if ultima_version_hash == contenido_hash:
+        return False, contenido_hash
+
+    limite_tiempo = datetime.utcnow() - timedelta(hours=VERSION_CHECKPOINT_HOURS)
+
+    if ultima_version.fecha and ultima_version.fecha > limite_tiempo:
+        return False, contenido_hash
+
+    return True, contenido_hash
+
+
+def guardar_version_automatica(
+    db: Session,
+    diagrama: Diagrama,
+    autor_codigo: str | None,
+    tipo: str = "auto",
+    titulo: str | None = None,
+    descripcion: str | None = None,
+    forzar: bool = False,
+):
     if autor_codigo is None:
         return
 
@@ -37,11 +92,24 @@ def guardar_version(db: Session, diagrama: Diagrama, autor_codigo: str | None):
     if autor is None:
         return
 
+    contenido = normalizar_contenido(diagrama.contenido)
+    contenido_hash = calcular_hash_contenido(contenido)
+
+    if not forzar:
+        debe_crear, contenido_hash = debe_crear_version_automatica(db, diagrama)
+
+        if not debe_crear:
+            return
+
     version = VersionHistorial(
         diagrama_id=diagrama.id,
         autor_id=autor_codigo,
-        contenido=deepcopy(diagrama.contenido),
+        contenido=deepcopy(contenido),
         version=diagrama.version,
+        titulo=titulo or f"Version {diagrama.version}",
+        descripcion=descripcion,
+        tipo=tipo,
+        contenido_hash=contenido_hash,
     )
 
     db.add(version)
@@ -100,13 +168,64 @@ def obtener_diagrama(db: Session, diagrama_id: int):
     return db.query(Diagrama).filter(Diagrama.id == diagrama_id).first()
 
 
-def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
+def listar_versiones_diagrama(db: Session, diagrama_id: int):
+    return (
+        db.query(VersionHistorial)
+        .filter(VersionHistorial.diagrama_id == diagrama_id)
+        .order_by(VersionHistorial.fecha.desc())
+        .all()
+    )
+
+
+def restaurar_version_diagrama(
+    db: Session,
+    diagrama_id: int,
+    version_id: int,
+    autor_codigo: str | None = None,
+):
     diagrama = obtener_diagrama(db, diagrama_id)
 
     if diagrama is None:
         return None, "DIAGRAMA_NO_EXISTE"
 
-    guardar_version(db, diagrama, datos.autor_codigo)
+    version = (
+        db.query(VersionHistorial)
+        .filter(
+            VersionHistorial.id == version_id,
+            VersionHistorial.diagrama_id == diagrama_id,
+        )
+        .first()
+    )
+
+    if version is None:
+        return None, "VERSION_NO_EXISTE"
+
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=autor_codigo,
+        tipo="restore_backup",
+        titulo=f"Respaldo antes de restaurar v{version.version}",
+        descripcion="Checkpoint automatico creado antes de restaurar una version anterior.",
+        forzar=True,
+    )
+
+    diagrama.contenido = normalizar_contenido(deepcopy(version.contenido))
+    flag_modified(diagrama, "contenido")
+    diagrama.version += 1
+    diagrama.actualizado_en = datetime.utcnow()
+
+    db.commit()
+    db.refresh(diagrama)
+
+    return diagrama, None
+
+
+def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
+    diagrama = obtener_diagrama(db, diagrama_id)
+
+    if diagrama is None:
+        return None, "DIAGRAMA_NO_EXISTE"
 
     if datos.nombre is not None:
         diagrama.nombre = datos.nombre
@@ -123,6 +242,12 @@ def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
 
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
+
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=datos.autor_codigo,
+    )
 
     db.commit()
     db.refresh(diagrama)
@@ -162,8 +287,6 @@ def agregar_clase(db: Session, diagrama_id: int, datos: ClaseCreate):
     if buscar_indice_clase(contenido, clase_id) is not None:
         return None, "CLASE_YA_EXISTE"
 
-    guardar_version(db, diagrama, datos.autor_codigo)
-
     nueva_clase = {
         "id": clase_id,
         "type": "classNode",
@@ -189,6 +312,12 @@ def agregar_clase(db: Session, diagrama_id: int, datos: ClaseCreate):
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
 
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=datos.autor_codigo,
+    )
+
     db.commit()
     db.refresh(diagrama)
 
@@ -207,8 +336,6 @@ def mover_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseMove):
     if index is None:
         return None, "CLASE_NO_EXISTE"
 
-    guardar_version(db, diagrama, datos.autor_codigo)
-
     contenido["nodes"][index]["position"] = {
         "x": datos.x,
         "y": datos.y,
@@ -223,6 +350,12 @@ def mover_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseMove):
     flag_modified(diagrama, "contenido")
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
+
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=datos.autor_codigo,
+    )
 
     db.commit()
     db.refresh(diagrama)
@@ -241,8 +374,6 @@ def editar_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseUpdat
 
     if index is None:
         return None, "CLASE_NO_EXISTE"
-
-    guardar_version(db, diagrama, datos.autor_codigo)
 
     data = contenido["nodes"][index].setdefault("data", {})
 
@@ -265,6 +396,12 @@ def editar_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseUpdat
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
 
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=datos.autor_codigo,
+    )
+
     db.commit()
     db.refresh(diagrama)
 
@@ -282,8 +419,6 @@ def eliminar_clase(db: Session, diagrama_id: int, clase_id: str, autor_codigo: s
 
     if index is None:
         return None, "CLASE_NO_EXISTE"
-
-    guardar_version(db, diagrama, autor_codigo)
 
     contenido["nodes"].pop(index)
     contenido["edges"] = [
@@ -305,6 +440,16 @@ def eliminar_clase(db: Session, diagrama_id: int, clase_id: str, autor_codigo: s
     flag_modified(diagrama, "contenido")
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
+
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=autor_codigo,
+        tipo="auto",
+        titulo=f"Version {diagrama.version}",
+        descripcion="Checkpoint automatico despues de eliminar una clase.",
+        forzar=True,
+    )
 
     db.commit()
     db.refresh(diagrama)
@@ -332,8 +477,6 @@ def agregar_relacion(db: Session, diagrama_id: int, datos: RelacionCreate):
     if buscar_indice_relacion(contenido, relacion_id) is not None:
         return None, "RELACION_YA_EXISTE"
 
-    guardar_version(db, diagrama, datos.autor_codigo)
-
     data = deepcopy(datos.data)
     data.setdefault("sourceClassId", datos.source)
     data.setdefault("targetClassId", datos.target)
@@ -360,6 +503,12 @@ def agregar_relacion(db: Session, diagrama_id: int, datos: RelacionCreate):
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
 
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=datos.autor_codigo,
+    )
+
     db.commit()
     db.refresh(diagrama)
 
@@ -377,8 +526,6 @@ def editar_relacion(db: Session, diagrama_id: int, relacion_id: str, datos: Rela
 
     if index is None:
         return None, "RELACION_NO_EXISTE"
-
-    guardar_version(db, diagrama, datos.autor_codigo)
 
     relacion = deepcopy(contenido["edges"][index])
 
@@ -410,6 +557,12 @@ def editar_relacion(db: Session, diagrama_id: int, relacion_id: str, datos: Rela
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
 
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=datos.autor_codigo,
+    )
+
     db.commit()
     db.refresh(diagrama)
 
@@ -428,7 +581,6 @@ def eliminar_relacion(db: Session, diagrama_id: int, relacion_id: str, autor_cod
     if index is None:
         return None, "RELACION_NO_EXISTE"
 
-    guardar_version(db, diagrama, autor_codigo)
     contenido["edges"].pop(index)
 
     error = validate_uml_relations(contenido)
@@ -440,6 +592,16 @@ def eliminar_relacion(db: Session, diagrama_id: int, relacion_id: str, autor_cod
     flag_modified(diagrama, "contenido")
     diagrama.version += 1
     diagrama.actualizado_en = datetime.utcnow()
+
+    guardar_version_automatica(
+        db=db,
+        diagrama=diagrama,
+        autor_codigo=autor_codigo,
+        tipo="auto",
+        titulo=f"Version {diagrama.version}",
+        descripcion="Checkpoint automatico despues de eliminar una relacion.",
+        forzar=True,
+    )
 
     db.commit()
     db.refresh(diagrama)

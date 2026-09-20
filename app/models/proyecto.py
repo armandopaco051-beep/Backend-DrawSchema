@@ -12,6 +12,9 @@ class Proyecto(Base):
     nombre = Column(String(150), nullable=False)
     descripcion = Column(Text, nullable=True)
     creado_en = Column(DateTime, server_default=func.now())
+    codigo_invitacion = Column(String(64), unique=True, nullable=True, index=True)
+    codigo_expira_en = Column(DateTime, nullable=True)
+
 
     miembros = relationship(
         "ProyectoUsuario",

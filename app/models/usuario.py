@@ -44,3 +44,10 @@ class Usuario(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    comentarios = relationship(
+        "Comentario",
+        back_populates="autor",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
