@@ -451,8 +451,10 @@ def agregar_clase(db: Session, diagrama_id: int, datos: ClaseCreate):
         },
         "data": {
             "name": datos.name,
+            "kind": datos.kind,
             "attributes": datos.attributes,
             "methods": datos.methods,
+            "templateParameters": datos.templateParameters,
         },
     }
 
@@ -540,6 +542,12 @@ def editar_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseUpdat
 
     if datos.methods is not None:
         data["methods"] = datos.methods
+
+    if datos.kind is not None:
+        data["kind"] = datos.kind
+
+    if datos.templateParameters is not None:
+        data["templateParameters"] = datos.templateParameters
 
     error = validate_uml_relations(contenido)
 

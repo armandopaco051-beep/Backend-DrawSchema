@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -66,6 +66,8 @@ class ClaseCreate(BaseModel):
     y: float = 100
     attributes: list[dict[str, Any]] = Field(default_factory=list)
     methods: list[dict[str, Any]] = Field(default_factory=list)
+    kind: Literal["class", "abstractClass", "interface"] = "class"
+    templateParameters: list[str] = Field(default_factory=list)
     autor_codigo: str | None = None
 
 
@@ -73,6 +75,8 @@ class ClaseUpdate(BaseModel):
     name: str | None = None
     attributes: list[dict[str, Any]] | None = None
     methods: list[dict[str, Any]] | None = None
+    kind: Literal["class", "abstractClass", "interface"] | None = None
+    templateParameters: list[str] | None = None
     autor_codigo: str | None = None
 
 

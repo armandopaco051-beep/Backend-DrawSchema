@@ -19,6 +19,8 @@ VALID_CARDINALITIES = {
     "1..*",
 }
 
+RELATION_TYPES_WITHOUT_CARDINALITY = {"generalization"}
+
 
 def get_relation_type(edge: dict[str, Any]):
     data = edge.get("data") or {}
@@ -128,11 +130,16 @@ def validate_uml_relations(contenido: dict[str, Any]):
         if edge.get("target") != target_class_id:
             return f"target del edge debe coincidir con data.targetClassId en la relacion {edge_id}"
 
-        for key in ("sourceCardinality", "targetCardinality", "cardinality"):
-            cardinality = data.get(key)
+        if relation_type in RELATION_TYPES_WITHOUT_CARDINALITY:
+            data.pop("sourceCardinality", None)
+            data.pop("targetCardinality", None)
+            data.pop("cardinality", None)
+        else:
+            for key in ("sourceCardinality", "targetCardinality", "cardinality"):
+                cardinality = data.get(key)
 
-            if cardinality is not None and cardinality not in VALID_CARDINALITIES:
-                return f"Cardinalidad no permitida en {edge_id}: {cardinality}"
+                if cardinality is not None and cardinality not in VALID_CARDINALITIES:
+                    return f"Cardinalidad no permitida en {edge_id}: {cardinality}"
 
         if relation_type in {"association", "associationClass"}:
             relation_key = (relation_type, *sorted([source_class_id, target_class_id]))
@@ -165,6 +172,12 @@ def validate_uml_relations(contenido: dict[str, Any]):
 
             if target_class_id in composition_whole_by_part:
                 return f"La parte {target_class_id} ya pertenece a otro todo por composicion"
+
+            if data.get("sourceCardinality") not in {None, "1", "0..1"}:
+                return (
+                    "En composition, una Parte puede pertenecer como maximo a un Todo; "
+                    "sourceCardinality debe ser 1 o 0..1"
+                )
 
             composition_whole_by_part[target_class_id] = source_class_id
             composition_graph[source_class_id].append(target_class_id)

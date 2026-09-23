@@ -7,6 +7,7 @@ from app.schemas.proyecto import (
     CodigoInvitacionResponse,
     InvitacionPreviewResponse,
     ProyectoCreate,
+    ProyectoPermisoResponse,
     ProyectoResponse,
     ProyectoUpdate,
     ProyectoUsuarioCreate,
@@ -24,12 +25,15 @@ from app.services.proyecto import (
     listar_miembros_proyecto,
     listar_proyectos,
     listar_proyectos_por_usuario,
+    normalizar_rol,
+    obtener_miembro_proyecto,
     obtener_info_codigo_invitacion,
     obtener_o_crear_codigo_invitacion,
     obtener_proyecto,
     quitar_colaborador_de_proyecto,
     unirse_a_proyecto_con_codigo,
     usuario_tiene_permiso,
+    PROJECT_ROLE_PERMISSIONS,
 )
 
 
@@ -74,6 +78,31 @@ def listar(db: Session = Depends(get_db)):
 @router.get("/usuario/{usuario_codigo}", response_model=list[ProyectoResponse])
 def listar_por_usuario(usuario_codigo: str, db: Session = Depends(get_db)):
     return listar_proyectos_por_usuario(db, usuario_codigo)
+
+
+@router.get("/{proyecto_id}/permiso", response_model=ProyectoPermisoResponse)
+def obtener_permiso_usuario_actual(
+    proyecto_id: int,
+    db: Session = Depends(get_db),
+    usuario_actual: Usuario = Depends(get_current_user),
+):
+    if obtener_proyecto(db, proyecto_id) is None:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+
+    miembro = obtener_miembro_proyecto(db, proyecto_id, usuario_actual.codigo)
+    if miembro is None or miembro.rol is None:
+        raise HTTPException(status_code=403, detail="No perteneces a este proyecto")
+
+    rol = normalizar_rol(miembro.rol.nombre)
+    permisos = sorted(PROJECT_ROLE_PERMISSIONS.get(rol, set()))
+
+    return ProyectoPermisoResponse(
+        proyecto_id=proyecto_id,
+        usuario_codigo=usuario_actual.codigo,
+        rol=rol.upper(),
+        permisos=permisos,
+        puede_editar="editar_diagrama" in permisos,
+    )
 
 
 @router.get("/{proyecto_id}", response_model=ProyectoResponse)
@@ -314,4 +343,3 @@ def unirse_con_codigo(
         raise HTTPException(status_code=400, detail=error)
 
     return proyecto
-

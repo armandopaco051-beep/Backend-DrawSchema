@@ -27,6 +27,14 @@ class ProyectoResponse(BaseModel):
         from_attributes = True
 
 
+class ProyectoPermisoResponse(BaseModel):
+    proyecto_id: int
+    usuario_codigo: str
+    rol: str
+    permisos: list[str]
+    puede_editar: bool
+
+
 class CodigoInvitacionResponse(BaseModel):
     codigo: str
     expira_en: datetime
