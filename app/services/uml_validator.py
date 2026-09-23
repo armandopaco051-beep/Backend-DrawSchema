@@ -94,6 +94,7 @@ def validate_uml_relations(contenido: dict[str, Any]):
             return "Todos los nodes deben tener id"
 
         node_by_id[node_id] = node
+        node_by_id[str(node_id).strip()] = node
 
     relation_keys = set()
     generalization_parent_by_child = {}

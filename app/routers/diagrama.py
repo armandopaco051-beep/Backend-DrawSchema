@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -35,9 +36,33 @@ from app.services.diagrama import (
 )
 from app.security.auth_dependencies import get_current_user
 from app.services.proyecto import usuario_tiene_permiso
+from app.services.realtime_manager import realtime_manager
 
 
 router = APIRouter(prefix="/diagramas", tags=["Diagramas"])
+
+
+def obtener_nodo_por_id(diagrama, node_id: str | None):
+    if not diagrama or not diagrama.contenido:
+        return None
+    nodes = diagrama.contenido.get("nodes", [])
+    if node_id:
+        for node in nodes:
+            if node.get("id") == node_id:
+                return node
+    return nodes[-1] if nodes else None
+
+
+def obtener_arista_por_id(diagrama, edge_id: str | None):
+    if not diagrama or not diagrama.contenido:
+        return None
+    edges = diagrama.contenido.get("edges", [])
+    if edge_id:
+        for edge in edges:
+            if edge.get("id") == edge_id:
+                return edge
+    return edges[-1] if edges else None
+
 
 
 def verificar_permiso_proyecto(
@@ -146,7 +171,7 @@ def restaurar_version(
 
 
 @router.put("/{diagrama_id}", response_model=DiagramaResponse)
-def guardar(
+async def guardar(
     diagrama_id: int,
     datos: DiagramaUpdate,
     db: Session = Depends(get_db),
@@ -161,7 +186,24 @@ def guardar(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    actor = datos.autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "DIAGRAM_SAVED",
+                "diagrama_id": diagrama_id,
+                "payload": {"contenido": diagrama.contenido, "version": diagrama.version},
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
+
 
 
 @router.delete("/{diagrama_id}", response_model=MensajeResponse)
@@ -180,7 +222,7 @@ def eliminar(
 
 
 @router.post("/{diagrama_id}/clases", response_model=DiagramaResponse)
-def crear_clase(
+async def crear_clase(
     diagrama_id: int,
     datos: ClaseCreate,
     db: Session = Depends(get_db),
@@ -198,11 +240,28 @@ def crear_clase(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    nueva_clase = obtener_nodo_por_id(diagrama, datos.id)
+    actor = datos.autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "CLASS_CREATED",
+                "diagrama_id": diagrama_id,
+                "payload": nueva_clase,
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
 
 
 @router.patch("/{diagrama_id}/clases/{clase_id}/mover", response_model=DiagramaResponse)
-def mover(
+async def mover(
     diagrama_id: int,
     clase_id: str,
     datos: ClaseMove,
@@ -221,11 +280,35 @@ def mover(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    actor = datos.autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "CLASS_MOVED",
+                "diagrama_id": diagrama_id,
+                "payload": {
+                    "id": clase_id,
+                    "class_id": clase_id,
+                    "clase_id": clase_id,
+                    "node_id": clase_id,
+                    "position": {"x": datos.x, "y": datos.y},
+                    "x": datos.x,
+                    "y": datos.y,
+                },
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
 
 
 @router.put("/{diagrama_id}/clases/{clase_id}", response_model=DiagramaResponse)
-def actualizar_clase(
+async def actualizar_clase(
     diagrama_id: int,
     clase_id: str,
     datos: ClaseUpdate,
@@ -244,11 +327,28 @@ def actualizar_clase(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    clase_actualizada = obtener_nodo_por_id(diagrama, clase_id)
+    actor = datos.autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "CLASS_UPDATED",
+                "diagrama_id": diagrama_id,
+                "payload": clase_actualizada,
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
 
 
 @router.delete("/{diagrama_id}/clases/{clase_id}", response_model=DiagramaResponse)
-def borrar_clase(
+async def borrar_clase(
     diagrama_id: int,
     clase_id: str,
     autor_codigo: str | None = Query(default=None),
@@ -267,11 +367,27 @@ def borrar_clase(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    actor = autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "CLASS_DELETED",
+                "diagrama_id": diagrama_id,
+                "payload": {"clase_id": clase_id},
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
 
 
 @router.post("/{diagrama_id}/relaciones", response_model=DiagramaResponse)
-def crear_relacion(
+async def crear_relacion(
     diagrama_id: int,
     datos: RelacionCreate,
     db: Session = Depends(get_db),
@@ -289,11 +405,28 @@ def crear_relacion(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    nueva_relacion = obtener_arista_por_id(diagrama, datos.id)
+    actor = datos.autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "RELATION_CREATED",
+                "diagrama_id": diagrama_id,
+                "payload": nueva_relacion,
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
 
 
 @router.put("/{diagrama_id}/relaciones/{relacion_id}", response_model=DiagramaResponse)
-def actualizar_relacion(
+async def actualizar_relacion(
     diagrama_id: int,
     relacion_id: str,
     datos: RelacionUpdate,
@@ -312,11 +445,28 @@ def actualizar_relacion(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    relacion_actualizada = obtener_arista_por_id(diagrama, relacion_id)
+    actor = datos.autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "RELATION_UPDATED",
+                "diagrama_id": diagrama_id,
+                "payload": relacion_actualizada,
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
 
 
 @router.delete("/{diagrama_id}/relaciones/{relacion_id}", response_model=DiagramaResponse)
-def borrar_relacion(
+async def borrar_relacion(
     diagrama_id: int,
     relacion_id: str,
     autor_codigo: str | None = Query(default=None),
@@ -335,4 +485,21 @@ def borrar_relacion(
     if error:
         raise HTTPException(status_code=400, detail=error)
 
+    actor = autor_codigo or usuario_actual.codigo or "Usuario"
+
+    try:
+        await realtime_manager.broadcast(
+            diagrama_id,
+            {
+                "type": "RELATION_DELETED",
+                "diagrama_id": diagrama_id,
+                "payload": {"relacion_id": relacion_id},
+                "actor": actor,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+    except Exception:
+        pass
+
     return diagrama
+
